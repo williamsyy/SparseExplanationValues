@@ -1,6 +1,6 @@
 # SparseExplanationValues
 
-The introduction of SEV has provided an sparse explanation for each unit based on a binary machine learning classifier and new ways to increase this sparsity explanation without its performance (like Accuracy and AUC). This code is used for **AISTATS 2024 Submission**, which contains implementations and Experiments for *Sparse Explanations Values (SEV)* and two optimal methods: *All-Opt* and *Vol-Opt*. 
+The introduction of SEV has provided an sparse explanation for each unit based on a binary machine learning classifier and new ways to increase this sparsity explanation without its performance (like Accuracy and AUC). This code is used for **AISTATS 2024**, which contains implementations and Experiments for *Sparse Explanations Values (SEV)* and two optimal methods: *All-Opt* and *Vol-Opt*. 
 
 # Development
 
