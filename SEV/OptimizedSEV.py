@@ -3,8 +3,11 @@ import torch.nn as nn
 from torch.utils.data import Dataset
 import numpy as np
 
+# this function is the basic modules for Optimizing SEV
+
 class SimpleLR(nn.Module):
-    def __init__(self, n_features,data_map, data_mean, sev_penalty = 0.01, positive_penalty = 1):
+    # this is the simple logistic regression model
+    def __init__(self, n_features,data_map, data_mean, sev_penalty, positive_penalty):
         super(SimpleLR, self).__init__()
         self.linear = nn.Linear(n_features, 1)
         # create the datamap for the dataset
@@ -32,7 +35,8 @@ class SimpleLR(nn.Module):
         return res.detach().cpu().numpy()
 
 class SimpleMLP(nn.Module):
-    def __init__(self, n_features, n_hidden, data_map, data_mean, sev_penalty=0.01, negative_penalty=1):
+    # this is the simple 2-layer MLP model
+    def __init__(self, n_features, n_hidden, data_map, data_mean, sev_penalty, positive_penalty):
         super(SimpleMLP, self).__init__()
         self.hidden = nn.Linear(n_features, n_hidden)
         self.output = nn.Linear(n_hidden, 1)
@@ -43,7 +47,7 @@ class SimpleMLP(nn.Module):
         self.data_mean_map = self.data_mean.view(-1) * torch.ones(self.data_map.shape)
         
         self.sev_penalty = sev_penalty
-        self.negative_penalty = negative_penalty
+        self.positive_penalty = positive_penalty
 
     def forward(self, x):
         x = self.hidden(x)
@@ -63,7 +67,8 @@ class SimpleMLP(nn.Module):
         return res.detach().cpu().numpy()
 
 class SimpleGBDT(nn.Module):
-    def __init__(self, base_model,data_map, data_mean, sev_penalty = 0.01, negative_penalty = 1):
+    # this is the simple GBDT model, which input a Gradient Boosting Classifier module in sklearn and creates a torch modules with the same structure. All the optimization is done for the weights of each tree created by the sklearn GBDT model.
+    def __init__(self, base_model,data_map, data_mean, sev_penalty, positive_penalty):
         super(SimpleGBDT, self).__init__()
         # create the datamap for the dataset
         self.data_map = torch.tensor(np.array(data_map),dtype=torch.float32)
@@ -72,11 +77,14 @@ class SimpleGBDT(nn.Module):
         # add the sev_penalty to the model
         self.sev_penalty = sev_penalty
         # add the negative penalty to the model
-        self.negative_penalty = negative_penalty
+        self.positive_penalty = positive_penalty
         # add the information for Gradient
         self.estimators = base_model.estimators_
+        # create the linear layer for the trees
         self.linear = nn.Linear(len(self.estimators), 1,bias=False)
+        # save the linear weights as ones
         self.linear.weights = torch.tensor(np.ones(len(self.estimators))*base_model.learning_rate,dtype=torch.float,requires_grad=True)
+        # save the bias predictor to create the bias term of GBDT
         self.bias_predictor = base_model.init_
 
     def forward(self, x):
@@ -100,10 +108,11 @@ class SimpleGBDT(nn.Module):
 
     def predict_proba(self,x):
         x_torch = torch.tensor(np.array(x),dtype=torch.float32)
-        logits = self(x_torch)
-        res = torch.cat([1-logits.T,logits.T]).T
-        return res.detach().cpu().numpy()
+        logits = self(x_torch).detach().numpy()
+        res = np.c_[1-logits.T,logits.T]
+        return res
 
+# this is the custom dataset class for the pytorch model
 class CustomDataset(Dataset):
     def __init__(self, X, y):
         self.X = torch.tensor(X, dtype=torch.float32)
@@ -115,127 +124,132 @@ class CustomDataset(Dataset):
     def __getitem__(self, idx):
         return self.X[idx], self.y[idx]
 
-class SEVMeanLoss(nn.Module):
+class AllOptPlus(nn.Module):
+    # this is implementation the loss function allopt+ 
     def __init__(self,model):
-        super(SEVMeanLoss, self).__init__()
+        super(AllOptPlus, self).__init__()
         self.model = model
 
     def SEV_Loss(self,x):
         temp_X1 = torch.unsqueeze(self.model.data_map,2) * torch.transpose(x,0,1)
+        # create the SEV+ = 1 datasets
         dataset = torch.stack([torch.tensor(np.where(self.model.data_map==0,self.model.data_mean_map,torch.transpose(i,0,1))) for i in torch.transpose(temp_X1,0,2)],1)
+        # get the output of the model
         out = self.model(dataset)
+        # get the output of the model
         y_pred = self.model(x)
+        # calculate the loss
         loss = -torch.sum(torch.clamp(torch.max(out,dim=0).values-0.5,max= 0.05)*torch.gt(y_pred,0.5))/(torch.sum(torch.gt(y_pred,0.5))+1e-10)
         return self.model.sev_penalty * loss
     
-    def Population_Negative_Loss(self):
+    def BaselinePositiveLoss(self):
         # make sure the population mean is negative
-        loss = torch.clamp(self.model(self.model.data_mean.view(1,-1)) - 0.5,max=0)
-        # if self.model(self.model.data_mean.view(1,-1)) [0] > 0.5:
-        #     print("Warning: The baseline is still positive!")
-        return self.model.negative_penalty * loss
+        loss = torch.clamp(self.model(self.model.data_mean.view(1,-1)) - 0.5,min=-0.05)
+        return self.model.positive_penalty * loss
 
     def forward(self, output, target, x):
+        # baseline loss as Binary Cross Entropy Loss
         baseloss = nn.BCELoss()
+        # get the BCE Loss
         loss = baseloss(output, target)
+        # calculate the AllOpt+ Loss
         sev_loss = self.SEV_Loss(x)
-        negative_loss = self.Population_Negative_Loss()
-        return loss, loss+ sev_loss + negative_loss, sev_loss
+        # calculate the positive baseline loss
+        positive_loss = self.BaselinePositiveLoss()
+        return loss, loss+ sev_loss + positive_loss, sev_loss
 
-class SEVVolumeLoss(nn.Module):
+class VolOpt(nn.Module):
     def __init__(self,model):
-        super(SEVVolumeLoss, self).__init__()
+        super(VolOpt, self).__init__()
         self.model = model
 
     def SEV_Loss(self,x):
+        # calculate the edge length of the model
         edge = torch.abs(self.model.linear(self.model.data_mean.view(1,-1))/self.model.linear.weight)
+        # clamp the edge length to avoid the gradient explosion
         edge = torch.clamp(edge,min=1e-10)
+        # take the log in order to transfrom the multiplcation of the edge length into the addition of the log of the edge length
         loss = torch.log(edge)
         loss = torch.mean(loss)
         return self.model.sev_penalty * loss
     
-    def Population_Negative_Loss(self):
+    def BaselinePositiveLoss(self):
         # make sure the population mean is negative
-        loss = torch.clamp(self.model(self.model.data_mean.view(1,-1)) - 0.5,max=0)
-        # if self.model(self.model.data_mean.view(1,-1)) [0] > 0.5:
-        #     print("Warning: The baseline is still positive!")
-        return self.model.negative_penalty * loss
+        loss = torch.clamp(self.model(self.model.data_mean.view(1,-1)) - 0.5,min=-0.05)
+        return self.model.positive_penalty * loss
 
     def forward(self, output, target, x):
         baseloss = nn.BCELoss()
         loss = baseloss(output, target)
         sev_loss = self.SEV_Loss(x)
-        negative_loss = self.Population_Negative_Loss()
-        return loss, loss+ sev_loss + negative_loss, sev_loss
+        positive_loss = self.BaselinePositiveLoss()
+        return loss, loss+ sev_loss + positive_loss, sev_loss
 
-class SEVCounterfactualLoss(nn.Module):
+class AllOptMinus(nn.Module):
+    # this is an implementation of the loss function AllOpt-
     def __init__(self,model):
-        super(SEVCounterfactualLoss, self).__init__()
+        super(AllOptMinus, self).__init__()
         self.model = model
 
     def SEV_Loss(self,x):
         temp_X1 = torch.stack([x for _ in range(self.model.data_map.shape[0])],0)
+        # calculate the SEV-=1 datasets
         dataset = torch.stack([torch.tensor(torch.where(self.model.data_map==0,i,self.model.data_mean_map)) for i in torch.transpose(temp_X1,0,1)],1)
         out = self.model(dataset)
         y_pred = self.model(x)
+        # calculate the loss funciton
         loss = torch.sum(torch.clamp(torch.min(out,dim=0).values-0.5,min= -0.05)*torch.gt(y_pred,0.5))/(torch.sum(torch.gt(y_pred,0.5))+1e-10)
         return self.model.sev_penalty * loss
     
-    def Population_Negative_Loss(self):
+    def BaselinePositiveLoss(self):
         # make sure the population mean is negative
-        loss = torch.clamp(self.model(self.model.data_mean.view(1,-1)) - 0.5,max=0)
-        # if self.model(self.model.data_mean.view(1,-1)) [0] > 0.5:
-        #     print("Warning: The baseline is still positive!")
-        return self.model.negative_penalty * loss
+        loss = torch.clamp(self.model(self.model.data_mean.view(1,-1)) - 0.5,min=-0.05)
+        return self.model.positive_penalty * loss
 
     def forward(self, output, target, x):
         baseloss = nn.BCELoss()
         loss = baseloss(output, target)
         sev_loss = self.SEV_Loss(x)
-        negative_loss = self.Population_Negative_Loss()
-        return loss, loss+ sev_loss + negative_loss, sev_loss
+        positive_loss = self.BaselinePositiveLoss()
+        return loss, loss+ sev_loss + positive_loss, sev_loss
 
-class SEVActionableCounterfactualLoss(nn.Module):
+class AllOptRestricted(nn.Module):
+    # this is the implmenation of the alloptR loss function
     def __init__(self,model,choices):
-        super(SEVActionableCounterfactualLoss, self).__init__()
+        super(AllOptRestricted, self).__init__()
         self.model = model
-        print(choices)
+        # the choices is a list of the index of the features that we want to select
         self.feature_selection = choices
         
     def SEV_Loss(self,x):
         temp_X1 = torch.stack([x for _ in range(self.model.data_map.shape[0])],0)
+        # caculate the SEVR=1 datasets
         dataset = torch.stack([torch.tensor(torch.where(self.model.data_map==0,i,self.model.data_mean_map)) for i in torch.transpose(temp_X1,0,1)],1)
         out = self.model(dataset)
+        # remove those features that are restrited
         out = out[self.feature_selection]
         y_pred = self.model(x)
         loss = torch.sum(torch.clamp(torch.min(out,dim=0).values-0.5,min= -0.05)*torch.gt(y_pred,0.5))/(torch.sum(torch.gt(y_pred,0.5))+1e-10)
         return self.model.sev_penalty * loss
     
-    def Population_Negative_Loss(self):
+    def BaselinePositiveLoss(self):
         # make sure the population mean is negative
-        loss = torch.clamp(self.model(self.model.data_mean.view(1,-1)) - 0.5,max=0)
-        # if self.model(self.model.data_mean.view(1,-1)) [0] > 0.5:
-        #     print("Warning: The baseline is still positive!")
-        return self.model.negative_penalty * loss
+        loss = torch.clamp(self.model(self.model.data_mean.view(1,-1)) - 0.5,min=-0.05)
+        return self.model.positive_penalty * loss
 
     def forward(self, output, target, x):
         baseloss = nn.BCELoss()
         loss = baseloss(output, target)
         sev_loss = self.SEV_Loss(x)
-        negative_loss = self.Population_Negative_Loss()
-        return loss, loss+ sev_loss + negative_loss, sev_loss
+        positive_loss = self.BaselinePositiveLoss()
+        return loss, loss+ sev_loss + positive_loss, sev_loss
 
 class OriginalLoss(nn.Module):
-    def __init__(self,model):
+    # the implementation of the original loss function
+    def __init__(self):
         super(OriginalLoss, self).__init__()
-        self.model = model
 
     def forward(self, output, target):
         baseloss = nn.BCELoss()
         loss = baseloss(output, target)
         return loss
-
-def calculate_accuracy(y_pred, y_true):
-    y_pred = (y_pred > 0.5).float()
-    correct = (y_pred == y_true).float().sum()
-    return correct / len(y_true)
