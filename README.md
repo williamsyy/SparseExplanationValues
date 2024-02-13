@@ -8,7 +8,6 @@ Guidelines for developers who wants to reproduce the experiments results, modify
 
 ## Repository Structure
 
-- **Appendix.pdf**: The appendix part of the main paper
 - **SEV**: The implementation of the definition of Sparse Explanations and two optimization methods. 
 
 It consists 5 files. The *SEV.py* file is the implementation of different **SEV** definitions: **SEV+**, **SEV-** and **SEV**$^{\circledR}$. *Encoder.py* file the data encoder for doing one-hot encoding for the general datasets, save the median values for numerical features and mode values for categorical features. *OptimizedSEV.py* includes all the optimization methods: **AllOpt+** for optimizing **SEV+**, **AllOpt-** for optimizing **SEV-**, **AllOptR** for optimizing **SEV**$^{\circledR}$, and **VolOpt** for optimizing **SEV+** in linear classifiers. It also includes the models used in the experiments: Logisitic Regression(**SimpleLR**), 2-layer MLP(**SimpleMLP**) and Graident Boosting Decision Trees(**GBDT**). 
