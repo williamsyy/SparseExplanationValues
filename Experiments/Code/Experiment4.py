@@ -1,5 +1,5 @@
-# Experiments 1: Optimizations
-# Description: This file contains the code for the grid search for different optimization experiments for finding the best hyperparameters
+# Experiments 4: Optimizations
+# Description: This file contains the code for calculate the SEV for different optimization experiments with a specific test set for sankey plotting
 
 import sys
 # Insert the path to the parent directory
@@ -44,6 +44,8 @@ parser.add_argument('--batch_size', type=int, default=128)
 parser.add_argument('--learning_rate', type=float, default=1e-1)
 parser.add_argument('--warm_up', type=float, default=0.7)
 parser.add_argument('--num_epochs', type=int, default=100)
+parser.add_argument('--sev_penalty', type=float, default=1e-2)
+parser.add_argument('--positive_penalty', type=float, default=1e-2)
 args = parser.parse_args()
 
 # load the dataset
@@ -62,6 +64,7 @@ def model_loader(model_name,sev,sev_penalty,X,y,positive_penalty):
         model = SimpleGBDT(pre_model,sev.data_map,sev.overall_mean,sev_penalty,positive_penalty)
     return model
     
+# load the criteria
 def criteria_loader(criteria_name,model):
     if criteria_name == 'alloptplus':
         criteria = AllOptPlus(model)
@@ -84,69 +87,69 @@ elif args.Optimized_method == 'alloptminus':
 else:
     raise ValueError("Invalid Optimized_method!")
 
-sev_penalty_candidates = [1e-2,1e-1,1,1e1,1e2]
-positive_penalty_candidates = [0,1e-1,1,1e1,1e2]
+# load the SEV penalty
+sev_penalty = args.sev_penalty
+positive_penalty = args.positive_penalty
 
-for sev_penalty in sev_penalty_candidates:
-    for positive_penalty in positive_penalty_candidates:
-        # split the dataset
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-        # preprocess the dataset
-        encoded_y_train = np.array(y_train)
-        encoded_y_test = np.array(y_test)
-        encoder = DataEncoder(standard=True)
-        merged_data = encoder.fit(X_neg)
-        encoded_data_train = encoder.transform(X_train)
-        encoded_data_test = encoder.transform(X_test)
-        encoded_data_train_arr = np.array(encoded_data_train)
-        encoded_data_test_arr = np.array(encoded_data_test)
+for i in range(10):
+    # split the dataset
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+    # preprocess the dataset
+    encoded_y_train = np.array(y_train)
+    encoded_y_test = np.array(y_test)
+    encoder = DataEncoder(standard=True)
+    merged_data = encoder.fit(X_neg)
+    encoded_data_train = encoder.transform(X_train)
+    encoded_data_test = encoder.transform(X_test)
+    encoded_data_train_arr = np.array(encoded_data_train)
+    encoded_data_test_arr = np.array(encoded_data_test)
 
-        # load the SEV
-        sev = SEV(None, encoder, encoded_data_train.columns)
+    # load the SEV
+    sev = SEV(None, encoder, encoded_data_train.columns)
 
-        # load the dataset
-        train_dataset = CustomDataset(encoded_data_train_arr, encoded_y_train)
+    # load the dataset
+    train_dataset = CustomDataset(encoded_data_train_arr, encoded_y_train)
 
-        # load the dataloader
-        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    # load the dataloader
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
 
-        # load the model
-        model = model_loader(args.model,sev,sev_penalty,encoded_data_train_arr,encoded_y_train,positive_penalty)
+    # load the model
+    model = model_loader(args.model,sev,sev_penalty,encoded_data_train_arr,encoded_y_train,positive_penalty)
 
-        # load the criteria
-        original_criteria, criteria = criteria_loader(args.Optimized_method,model)
+    # load the criteria
+    original_criteria, criteria = criteria_loader(args.Optimized_method,model)
 
-        # load the optimizer
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+    # load the optimizer
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 
-        # train the model
-        model_train(model, original_criteria, criteria, optimizer, train_loader, args.num_epochs, args.warm_up)
-        # evaluate the model
-        y_pred_train = model.predict_proba(encoded_data_train_arr)[:,1]
-        y_pred = model.predict_proba(encoded_data_test_arr)[:,1]
-        
-        train_acc = accuracy_score(encoded_y_train, y_pred_train > 0.5)
-        test_acc = accuracy_score(encoded_y_test, y_pred > 0.5)
-        train_auc = roc_auc_score(encoded_y_train, y_pred_train)
-        test_auc = roc_auc_score(encoded_y_test, y_pred)
+    # train the model
+    model_train(model, original_criteria, criteria, optimizer, train_loader, args.num_epochs, args.warm_up)
+    # evaluate the model
+    y_pred_train = model.predict_proba(encoded_data_train_arr)[:,1]
+    y_pred = model.predict_proba(encoded_data_test_arr)[:,1]
 
-        # calculate the SEVPlot
-        sev_arr, count = SEVPlot(model,encoder, encoded_data_test,max_depth=args.max_depth,mode=mode,max_time=args.max_time)
+    train_acc = accuracy_score(encoded_y_train, y_pred_train > 0.5)
+    test_acc = accuracy_score(encoded_y_test, y_pred > 0.5)
+    train_auc = roc_auc_score(encoded_y_train, y_pred_train)
+    test_auc = roc_auc_score(encoded_y_test, y_pred)
 
-        try:
-            # save the result in file
-            result_file = copy(encoded_data_test)
-            result_file['SEV'] = sev_arr
-            result_file.to_csv("../Results/Exp1/data/%s_%s_%s_%s_%s.csv"%(args.dataset,args.model,args.Optimized_method,sev_penalty,positive_penalty),index=False)
-        except:
-            continue
+    # calculate the SEVPlot
+    sev_arr, count = SEVPlot(model,encoder, encoded_data_test,max_depth=args.max_depth,mode=mode,max_time=args.max_time)
+
+    try:
+        # save the result in file
+        result_file = copy(encoded_data_test)
+        result_file['SEV'] = sev_arr
+        result_file.to_csv("../Results/Exp4/data/%s_%s_%s_%s.csv"%(args.dataset,args.model,args.Optimized_method,i),index=False)
+    except:
+        raise ValueError("Invalid input!")
 
 
-        # write the results in the file
-        f = open("../Results/Exp1/result.csv",'a')
-        f.write("%s,%s,%s,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n"%(args.dataset,args.model,args.Optimized_method, sev_penalty,positive_penalty,train_acc,test_acc,train_auc,test_auc,np.sum(sev_arr)/count))
-        f.close()
-        
+    # write the results in the file
+    f = open("../Results/Exp4/result.csv",'a')
+    f.write("%s,%s,%s,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n"%(args.dataset,args.model,args.Optimized_method, sev_penalty,positive_penalty,train_acc,test_acc,train_auc,test_auc,np.sum(sev_arr)/count))
+    f.close()
+
 
         
         
